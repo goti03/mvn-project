@@ -1,82 +1,91 @@
 pipeline {
-    agent any 
+    agent any
     
     tools{
-        jdk 'jdk11'
+        jdk 'jdk17'
         maven 'maven3'
     }
     
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        GIT_CRED = 'github-cred'
+        GIT_URL = 'git@github.com:goti03/mvn-project.git'
+        SONARQUBE_URL = 'http://192.168.1.225:9000'
+        SONARQUBE_TOKEN = credentials('sonarqube-token')
+        SCANNER_HOME= tool 'sonar-scanner'
     }
-    
-    stages{
-        
-        stage("Git Checkout"){
-            steps{
-                git branch: 'main', changelog: false, poll: false, url: 'https://github.com/jaiswaladi246/Petclinic.git'
-            }
+
+    stages {
+
+        stage('Checkout Project...')
+        {
+            steps
+                {
+                    git branch: env.GIT_BRANCH,
+                    credentialsId: env.GIT_CRED,
+                    url: env.GIT_URL
+                }
         }
-        
-        stage("Compile"){
-            steps{
-                sh "mvn clean compile"
-            }
-        }
-        
-         stage("Test Cases"){
-            steps{
-                sh "mvn test"
-            }
-        }
-        
-        stage("Sonarqube Analysis "){
-            steps{
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Petclinic \
-                    -Dsonar.java.binaries=. \
-                    -Dsonar.projectKey=Petclinic '''
-    
+
+        stage('Compile Code') {
+            steps {
+                script {
+                    echo 'Compiling the source code...'
+                    sh "mvn clean compile"
                 }
             }
         }
-        
-        stage("OWASP Dependency Check"){
-            steps{
-                dependencyCheck additionalArguments: '--scan ./ --format HTML ', odcInstallation: 'DP'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+
+        stage('Run Unit Tests & Generate Code Coverage') {
+            steps {
+                script {
+                    echo 'Running Unit Tests and Generating Coverage Report...'
+                    sh 'mvn test jacoco:report'
+                }
+            }
+            post {
+                always {
+                    jacoco execPattern: '**/target/jacoco.exec', classPattern: '**/target/classes', sourcePattern: '**/src/main/java'
+                }
             }
         }
-        
-         stage("Build"){
-            steps{
-                sh " mvn clean install"
-            }
-        }
-        
-        stage("Docker Build & Push"){
-            steps{
-                script{
-                   withDockerRegistry(credentialsId: '58be877c-9294-410e-98ee-6a959d73b352', toolName: 'docker') {
-                        
-                        sh "docker build -t image1 ."
-                        sh "docker tag image1 adijaiswal/pet-clinic123:latest "
-                        sh "docker push adijaiswal/pet-clinic123:latest "
+
+        stage('Static Code Analysis with SonarQube') {
+            steps {
+                script {
+                    echo 'Running Static Code Analysis using SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        sh 'mvn -X sonar:sonar'
                     }
                 }
             }
         }
-        
-        stage("TRIVY"){
+
+        stage("OWASP Dependency Check"){
             steps{
-                sh " trivy image adijaiswal/pet-clinic123:latest"
+                dependencyCheck additionalArguments: '--scan ./ --format HTML ', odcInstallation: 'DP-check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
             }
         }
-        
-        stage("Deploy To Tomcat"){
-            steps{
-                sh "cp  /var/lib/jenkins/workspace/CI-CD/target/petclinic.war /opt/apache-tomcat-9.0.65/webapps/ "
+
+        stage('Quality Gate Check') {
+            steps {
+                script {
+                    echo 'Checking SonarQube Quality Gate...'
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true
+                    }
+                }
             }
+        }
+
+    }
+
+    post {
+        success {
+            echo 'Build completed successfully!'
+        }
+        failure {
+            echo 'Build failed! Check logs for details.'
         }
     }
 }
